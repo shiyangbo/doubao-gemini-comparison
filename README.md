@@ -6,7 +6,7 @@
 
 1. Chrome 安装 Tampermonkey
 2. Tampermonkey → 新建脚本
-3. 复制粘贴 [dual-chat-compare.user.js]全部内容并保存
+3. 复制粘贴 [dual-chat-compare.user.js](file:///Users/shiyangbo/claude_playground_coding_plan/userscripts/dual-chat-compare.user.js) 全部内容并保存
 4. 打开以下页面（建议左右分屏），确保已登录
    - 豆包：`https://www.doubao.com/`
    - AI Studio：`https://aistudio.google.com/`
@@ -19,6 +19,8 @@
 4. 点击「最新」：优先定位到“最近一次上屏问题”对应的最新回答开头；若定位失败则滚到对话最新位置
 
 默认是收起状态，只显示一个小浮点按钮；点一下即可展开。收起/展开在两个页面会联动生效。
+
+新开页面或刷新页面时，浮动面板输入框会默认清空，不回填上一次历史问题。
 
 ## 说明
 
