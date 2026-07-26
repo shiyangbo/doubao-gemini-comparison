@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dual Chat Compare (Doubao vs AI Studio)
 // @namespace    local.dual-chat-compare
-// @version      0.3.5
+// @version      0.3.6
 // @description  豆包 + Google AI Studio：一次输入，上屏/开始回答/滚到最新（MVP）
 // @match        *://www.doubao.com/*
 // @match        *://doubao.com/*
@@ -580,9 +580,7 @@
   });
 
   const initFromShared = () => {
-    const q = readQuestion();
-    const qText = safeText(q?.text ?? "");
-    if (qText) UI.qInput.value = qText;
+    UI.qInput.value = "";
   };
 
   GM_addValueChangeListener(KEY.question, (_name, _oldVal, newVal) => {
