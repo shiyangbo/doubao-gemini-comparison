@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dual Chat Compare (Doubao vs AI Studio)
 // @namespace    local.dual-chat-compare
-// @version      0.3.6
+// @version      0.4.4
 // @description  豆包 + Google AI Studio：一次输入，上屏/开始回答/滚到最新（MVP）
 // @match        *://www.doubao.com/*
 // @match        *://doubao.com/*
@@ -215,7 +215,37 @@
       return pressKeyCombo(input, { key: "Enter", code: "Enter" });
     };
 
+    const getConversationRoot = () => {
+      if (SITE === "doubao") {
+        return document.querySelector("[class^='message-list-']") ?? document.querySelector("[class*='message-list-']") ?? document.querySelector("main") ?? document.body;
+      }
+      return document.querySelector("ms-chat-session ms-autoscroll-container") ?? document.querySelector("ms-chat-session") ?? document.querySelector("main") ?? document.body;
+    };
+
+    const getLatestAnswerFingerprint = () => {
+      const root = getConversationRoot();
+      if (SITE === "doubao") {
+        const last = Array.from(root.querySelectorAll(".md-box-root"))
+          .filter((el) => !el.closest(`#${PANEL_ID}`))
+          .filter((el) => isVisible(el))
+          .filter((el) => !!el.querySelector(".container-enLQFx, [class*='container-enLQFx']"))
+          .at(-1);
+        return safeText(last?.innerText ?? last?.textContent ?? "");
+      }
+      const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const lastHost = Array.from(root.querySelectorAll("[id]"))
+        .filter((el) => el instanceof Element)
+        .filter((el) => uuidRe.test(el.id))
+        .filter((el) => !el.closest(`#${PANEL_ID}`))
+        .filter((el) => !!el.querySelector("ms-cmark-node, ms-chunk-editor ms-cmark-node, ms-text-chunk"))
+        .at(-1);
+      if (lastHost) return safeText(lastHost.innerText ?? lastHost.textContent ?? "");
+      const lastChunk = Array.from(root.querySelectorAll("ms-text-chunk")).filter((el) => !el.closest(`#${PANEL_ID}`)).at(-1);
+      return safeText(lastChunk?.innerText ?? lastChunk?.textContent ?? "");
+    };
+
     const scrollToLatest = () => {
+      const scrollBehavior = document.visibilityState === "visible" ? "smooth" : "auto";
       const normalize = (s) => {
         const raw = `${s ?? ""}`;
         const nfkc = typeof raw.normalize === "function" ? raw.normalize("NFKC") : raw;
@@ -264,11 +294,7 @@
         return false;
       };
       if (SITE === "doubao") {
-        const msgList =
-          document.querySelector("[class^='message-list-']") ??
-          document.querySelector("[class*='message-list-']") ??
-          document.querySelector("main") ??
-          document.body;
+        const msgList = getConversationRoot();
         if (qNorm) {
           const items = Array.from(msgList.querySelectorAll("[data-container-type='block-v2']"))
             .filter((el) => !el.closest(`#${PANEL_ID}`))
@@ -288,7 +314,7 @@
                 const hasAnswer = !!cand.querySelector(".md-box-root .container-enLQFx, .md-box-root [class*='container-enLQFx']");
                 if (!hasAnswer) continue;
                 try {
-                  cand.scrollIntoView({ block: "start", behavior: "smooth" });
+                  cand.scrollIntoView({ block: "start", behavior: scrollBehavior });
                   return true;
                 } catch {
                   break;
@@ -306,7 +332,7 @@
           blocks.sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
           const latest = blocks[0];
           try {
-            latest.scrollIntoView({ block: "start", behavior: "smooth" });
+            latest.scrollIntoView({ block: "start", behavior: scrollBehavior });
             return true;
           } catch {
             // ignore
@@ -314,7 +340,7 @@
         }
         const scroller = msgList.querySelector(".scroller") ?? msgList;
         try {
-          scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+          scroller.scrollTo({ top: scroller.scrollHeight, behavior: scrollBehavior });
           return true;
         } catch {
           try {
@@ -326,11 +352,7 @@
         }
       }
 
-      const container =
-        document.querySelector("ms-chat-session ms-autoscroll-container") ??
-        document.querySelector("ms-chat-session") ??
-        document.querySelector("main") ??
-        document.body;
+      const container = getConversationRoot();
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const hosts = Array.from(container.querySelectorAll("[id]"))
         .filter((el) => el instanceof Element)
@@ -352,7 +374,7 @@
             const isModel = !!host.querySelector("ms-cmark-node, ms-chunk-editor ms-cmark-node");
             if (!isModel) continue;
             try {
-              host.scrollIntoView({ block: "start", behavior: "smooth" });
+              host.scrollIntoView({ block: "start", behavior: scrollBehavior });
               return true;
             } catch {
               break;
@@ -367,7 +389,7 @@
           const isModel = !!host.querySelector("ms-cmark-node, ms-chunk-editor ms-cmark-node");
           if (!isModel) continue;
           try {
-            host.scrollIntoView({ block: "start", behavior: "smooth" });
+            host.scrollIntoView({ block: "start", behavior: scrollBehavior });
             return true;
           } catch {
             // ignore
@@ -380,14 +402,14 @@
       const lastChunk = chunks.at(-1);
       if (lastChunk && lastChunk instanceof Element) {
         try {
-          lastChunk.scrollIntoView({ block: "start", behavior: "smooth" });
+          lastChunk.scrollIntoView({ block: "start", behavior: scrollBehavior });
           return true;
         } catch {
           // ignore
         }
       }
       try {
-        container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+        container.scrollTo({ top: container.scrollHeight, behavior: scrollBehavior });
         return true;
       } catch {
         try {
@@ -399,7 +421,7 @@
       }
     };
 
-    return { findInput, fill, send, scrollToLatest };
+    return { findInput, fill, send, scrollToLatest, getConversationRoot, getLatestAnswerFingerprint };
   })();
 
   const UI = (() => {
@@ -479,6 +501,25 @@
     const btnStart = mkBtn("开始回答");
     const btnLatest = mkBtn("最新");
 
+    const toast = document.createElement("div");
+    toast.style.position = "fixed";
+    toast.style.right = "12px";
+    toast.style.bottom = "72px";
+    toast.style.maxWidth = "280px";
+    toast.style.padding = "8px 10px";
+    toast.style.borderRadius = "10px";
+    toast.style.background = "rgba(18, 18, 20, 0.92)";
+    toast.style.border = "1px solid rgba(255,255,255,0.12)";
+    toast.style.boxShadow = "0 10px 30px rgba(0,0,0,0.28)";
+    toast.style.color = "#9fd3ff";
+    toast.style.fontSize = "11px";
+    toast.style.lineHeight = "1.4";
+    toast.style.pointerEvents = "none";
+    toast.style.zIndex = "2147483647";
+    toast.style.opacity = "0";
+    toast.style.transform = "translateY(6px)";
+    toast.style.transition = "opacity 0.18s ease, transform 0.18s ease";
+
     btnRow.appendChild(btnScreen);
     btnRow.appendChild(btnStart);
     btnRow.appendChild(btnLatest);
@@ -489,6 +530,7 @@
     root.appendChild(header);
     root.appendChild(body);
     document.documentElement.appendChild(root);
+    document.documentElement.appendChild(toast);
 
     let collapsed = readCollapsed();
     if (GM_getValue(KEY.uiCollapsed, null) == null) {
@@ -520,8 +562,30 @@
       setCollapsed(!collapsed, true);
     });
  
-    return { qInput, btnScreen, btnStart, btnLatest, setCollapsed };
+    const setStatus = (text) => {
+      const visible = !!text;
+      toast.textContent = text || "";
+      toast.style.opacity = visible ? "1" : "0";
+      toast.style.transform = visible ? "translateY(0)" : "translateY(6px)";
+    };
+
+    return { qInput, btnScreen, btnStart, btnLatest, setCollapsed, setStatus };
   })();
+
+  let latestStatusTimer = null;
+  const setLatestStatus = (text, autoClearMs = 0) => {
+    if (latestStatusTimer) {
+      window.clearTimeout(latestStatusTimer);
+      latestStatusTimer = null;
+    }
+    UI.setStatus(text || "");
+    if (autoClearMs > 0) {
+      latestStatusTimer = window.setTimeout(() => {
+        UI.setStatus("");
+        latestStatusTimer = null;
+      }, autoClearMs);
+    }
+  };
 
   const applyQuestionToThisPage = (qText) => {
     return Adapter.fill(qText);
@@ -535,10 +599,83 @@
   };
 
   const scrollToLatestOnThisPage = () => {
-    return Adapter.scrollToLatest();
+    const run = () => Adapter.scrollToLatest();
+    const ok = run();
+    [120, 360, 800, 1500].forEach((delay) => {
+      window.setTimeout(run, delay);
+    });
+    return ok;
+  };
+
+  let pendingLatestStop = null;
+  let pendingLatestWhenVisible = false;
+  const clearLatestReplayWindow = () => {
+    pendingLatestWhenVisible = false;
+  };
+  const replayLatestIfNeeded = () => {
+    if (!pendingLatestWhenVisible) return;
+    pendingLatestWhenVisible = false;
+    requestLatestOnThisPage();
+  };
+  const cancelPendingLatest = (clearStatus = true) => {
+    if (pendingLatestStop) pendingLatestStop();
+    pendingLatestStop = null;
+    if (clearStatus) setLatestStatus("");
+  };
+
+  const requestLatestOnThisPage = () => {
+    cancelPendingLatest(false);
+    if (document.visibilityState !== "visible") {
+      pendingLatestWhenVisible = true;
+      setLatestStatus("等待切回页面后自动定位…");
+      return true;
+    }
+    setLatestStatus("正在定位最新…");
+    const ok = scrollToLatestOnThisPage();
+    const root = Adapter.getConversationRoot();
+    if (!(root instanceof Element)) {
+      setLatestStatus(ok ? "已定位到最新" : "暂未找到可定位内容", 1800);
+      return ok;
+    }
+    const startedAt = now();
+    const idleTimeout = 2500;
+    let lastChangeAt = now();
+    let lastFingerprint = Adapter.getLatestAnswerFingerprint();
+    let sawChange = false;
+    const touch = () => {
+      const next = Adapter.getLatestAnswerFingerprint();
+      if (next === lastFingerprint) return;
+      lastFingerprint = next;
+      lastChangeAt = now();
+      if (!sawChange) setLatestStatus("等待回答完成后自动定位…");
+      sawChange = true;
+    };
+    const timer = window.setInterval(() => {
+      touch();
+      if (sawChange && now() - lastChangeAt > 1800) {
+        cancelPendingLatest(false);
+        scrollToLatestOnThisPage();
+        setLatestStatus("已自动定位到最新", 1800);
+        return;
+      }
+      if ((!sawChange && now() - startedAt > idleTimeout) || now() - startedAt > 90000) {
+        cancelPendingLatest(false);
+        setLatestStatus(ok ? "已定位到最新" : "暂未找到可定位内容", 1800);
+      }
+    }, 500);
+    const observer = new MutationObserver(touch);
+    observer.observe(root, { childList: true, subtree: true, characterData: true });
+    pendingLatestStop = () => {
+      observer.disconnect();
+      window.clearInterval(timer);
+      pendingLatestStop = null;
+    };
+    return ok;
   };
 
   UI.btnScreen.addEventListener("click", () => {
+    cancelPendingLatest();
+    clearLatestReplayWindow();
     const qText = safeText(UI.qInput.value);
     if (!qText) return;
     const q = writeQuestion(qText);
@@ -547,6 +684,8 @@
   });
 
   UI.btnStart.addEventListener("click", () => {
+    cancelPendingLatest();
+    clearLatestReplayWindow();
     const qText = safeText(UI.qInput.value);
     if (!qText) return;
     const q = writeQuestion(qText);
@@ -555,8 +694,9 @@
   });
 
   UI.btnLatest.addEventListener("click", () => {
+    UI.setCollapsed(true, true);
     writeAction("latest");
-    scrollToLatestOnThisPage();
+    requestLatestOnThisPage();
   });
 
   GM_addValueChangeListener(KEY.action, (_name, _oldVal, newVal, remote) => {
@@ -565,23 +705,33 @@
     const q = readQuestion();
     const qText = safeText(q?.text ?? "");
     if (type === "screen") {
+      cancelPendingLatest();
+      clearLatestReplayWindow();
       if (!qText) return;
       applyQuestionToThisPage(qText);
       return;
     }
     if (type === "start") {
+      cancelPendingLatest();
+      clearLatestReplayWindow();
       if (!qText) return;
       startAnswerOnThisPage(qText);
       return;
     }
     if (type === "latest") {
-      scrollToLatestOnThisPage();
+      requestLatestOnThisPage();
     }
   });
 
   const initFromShared = () => {
     UI.qInput.value = "";
   };
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") replayLatestIfNeeded();
+  });
+  window.addEventListener("focus", replayLatestIfNeeded, true);
+  window.addEventListener("pageshow", replayLatestIfNeeded);
 
   GM_addValueChangeListener(KEY.question, (_name, _oldVal, newVal) => {
     const qText = safeText(newVal?.text ?? "");
@@ -592,6 +742,7 @@
     if (!remote) return;
     UI.setCollapsed(!!newVal, false);
   });
+
 
   initFromShared();
 })();
