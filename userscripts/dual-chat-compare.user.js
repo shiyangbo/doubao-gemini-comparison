@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dual Chat Compare (Doubao vs AI Studio)
 // @namespace    local.dual-chat-compare
-// @version      0.4.4
+// @version      0.4.5
 // @description  豆包 + Google AI Studio：一次输入，上屏/开始回答/滚到最新（MVP）
 // @match        *://www.doubao.com/*
 // @match        *://doubao.com/*
@@ -11,7 +11,7 @@
 // @grant        GM_addValueChangeListener
 // @run-at       document-idle
 // ==/UserScript==
- 
+
 (() => {
   const APP_ID = "dual_chat_compare_v1";
   const PANEL_ID = `${APP_ID}__panel`;
@@ -42,7 +42,7 @@
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   };
- 
+
   const isCenterColumn = (el) => {
     if (!el || !(el instanceof Element)) return false;
     const rect = el.getBoundingClientRect();
@@ -51,10 +51,39 @@
     if (cx < vw * 0.22 || cx > vw * 0.78) return false;
     return true;
   };
- 
+
   const isInPageChrome = (el) => {
     if (!el || !(el instanceof Element)) return false;
     return !!el.closest("nav, header, footer, aside, [role='navigation']");
+  };
+
+  // 从 start 向上找真正的纵向滚动容器
+  const findScroller = (start) => {
+    let el = start instanceof Element ? start : null;
+    while (el) {
+      if (/(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight) return el;
+      el = el.parentElement;
+    }
+    return null;
+  };
+
+  // scrollTo 失败不抛异常,需自行验证;false 表示滚动静默无效
+  const scrollToBottomVerified = (el, behavior) => {
+    if (!el || !(el instanceof Element)) return false;
+    if (el.scrollHeight <= el.clientHeight) return true;
+    const isViewport = el === document.documentElement || el === document.body;
+    if (!isViewport && !/(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY)) return false;
+    try {
+      el.scrollTo({ top: el.scrollHeight, behavior });
+      return true;
+    } catch {
+      try {
+        el.scrollTop = el.scrollHeight;
+        return true;
+      } catch {
+        return false;
+      }
+    }
   };
 
   const readQuestion = () => GM_getValue(KEY.question, null);
@@ -76,7 +105,7 @@
     GM_setValue(KEY.action, payload);
     return payload;
   };
- 
+
   const readCollapsed = () => !!GM_getValue(KEY.uiCollapsed, false);
   const writeCollapsed = (collapsed) => {
     GM_setValue(KEY.uiCollapsed, !!collapsed);
@@ -217,7 +246,7 @@
 
     const getConversationRoot = () => {
       if (SITE === "doubao") {
-        return document.querySelector("[class^='message-list-']") ?? document.querySelector("[class*='message-list-']") ?? document.querySelector("main") ?? document.body;
+        return document.querySelector("[class^='chat-list-']") ?? document.querySelector("[class*='chat-list-']") ?? document.querySelector("main") ?? document.body;
       }
       return document.querySelector("ms-chat-session ms-autoscroll-container") ?? document.querySelector("ms-chat-session") ?? document.querySelector("main") ?? document.body;
     };
@@ -230,7 +259,7 @@
           .filter((el) => isVisible(el))
           .filter((el) => !!el.querySelector(".container-enLQFx, [class*='container-enLQFx']"))
           .at(-1);
-        return safeText(last?.innerText ?? last?.textContent ?? "");
+        return safeText(last?.textContent ?? "");
       }
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const lastHost = Array.from(root.querySelectorAll("[id]"))
@@ -239,9 +268,9 @@
         .filter((el) => !el.closest(`#${PANEL_ID}`))
         .filter((el) => !!el.querySelector("ms-cmark-node, ms-chunk-editor ms-cmark-node, ms-text-chunk"))
         .at(-1);
-      if (lastHost) return safeText(lastHost.innerText ?? lastHost.textContent ?? "");
+      if (lastHost) return safeText(lastHost.textContent ?? "");
       const lastChunk = Array.from(root.querySelectorAll("ms-text-chunk")).filter((el) => !el.closest(`#${PANEL_ID}`)).at(-1);
-      return safeText(lastChunk?.innerText ?? lastChunk?.textContent ?? "");
+      return safeText(lastChunk?.textContent ?? "");
     };
 
     const scrollToLatest = () => {
@@ -338,18 +367,9 @@
             // ignore
           }
         }
-        const scroller = msgList.querySelector(".scroller") ?? msgList;
-        try {
-          scroller.scrollTo({ top: scroller.scrollHeight, behavior: scrollBehavior });
-          return true;
-        } catch {
-          try {
-            scroller.scrollTop = scroller.scrollHeight;
-            return true;
-          } catch {
-            return false;
-          }
-        }
+        const scroller = findScroller(msgList) ?? msgList;
+        if (scrollToBottomVerified(scroller, scrollBehavior)) return true;
+        return scrollToBottomVerified(document.scrollingElement || document.documentElement, scrollBehavior);
       }
 
       const container = getConversationRoot();
@@ -408,17 +428,9 @@
           // ignore
         }
       }
-      try {
-        container.scrollTo({ top: container.scrollHeight, behavior: scrollBehavior });
-        return true;
-      } catch {
-        try {
-          container.scrollTop = container.scrollHeight;
-          return true;
-        } catch {
-          return false;
-        }
-      }
+      const scroller = findScroller(container) ?? container;
+      if (scrollToBottomVerified(scroller, scrollBehavior)) return true;
+      return scrollToBottomVerified(document.scrollingElement || document.documentElement, scrollBehavior);
     };
 
     return { findInput, fill, send, scrollToLatest, getConversationRoot, getLatestAnswerFingerprint };
@@ -557,11 +569,11 @@
       if (sync) writeCollapsed(collapsed);
     };
     setCollapsed(collapsed, false);
- 
+
     btnToggle.addEventListener("click", () => {
       setCollapsed(!collapsed, true);
     });
- 
+
     const setStatus = (text) => {
       const visible = !!text;
       toast.textContent = text || "";
@@ -663,7 +675,17 @@
         setLatestStatus(ok ? "已定位到最新" : "暂未找到可定位内容", 1800);
       }
     }, 500);
-    const observer = new MutationObserver(touch);
+    // rAF 合并高频突变:流式输出时每帧最多算一次指纹
+    let rafPending = false;
+    const scheduleTouch = () => {
+      if (rafPending) return;
+      rafPending = true;
+      requestAnimationFrame(() => {
+        rafPending = false;
+        touch();
+      });
+    };
+    const observer = new MutationObserver(scheduleTouch);
     observer.observe(root, { childList: true, subtree: true, characterData: true });
     pendingLatestStop = () => {
       observer.disconnect();
@@ -737,7 +759,7 @@
     const qText = safeText(newVal?.text ?? "");
     UI.qInput.value = qText;
   });
- 
+
   GM_addValueChangeListener(KEY.uiCollapsed, (_name, _oldVal, newVal, remote) => {
     if (!remote) return;
     UI.setCollapsed(!!newVal, false);
