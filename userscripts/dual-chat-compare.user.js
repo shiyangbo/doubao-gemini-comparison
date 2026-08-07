@@ -1,11 +1,14 @@
 // ==UserScript==
-// @name         Dual Chat Compare (Doubao vs AI Studio)
+// @name         Dual Chat Compare (Doubao / AI Studio / Kimi)
 // @namespace    local.dual-chat-compare
-// @version      0.4.5
-// @description  豆包 + Google AI Studio：一次输入，上屏/开始回答/滚到最新（MVP）
+// @version      0.4.9
+// @description  豆包 + Google AI Studio + Kimi：一次输入，上屏/开始回答/滚到最新（MVP）
 // @match        *://www.doubao.com/*
 // @match        *://doubao.com/*
 // @match        *://aistudio.google.com/*
+// @match        *://www.kimi.com/*
+// @match        *://kimi.com/*
+// @match        *://kimi.moonshot.cn/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addValueChangeListener
@@ -26,6 +29,7 @@
     const host = location.host.toLowerCase();
     if (host.includes("doubao.com")) return "doubao";
     if (host.includes("aistudio.google.com")) return "aistudio";
+    if (host.includes("kimi.com") || host.includes("kimi.moonshot.cn")) return "kimi";
     return null;
   })();
 
@@ -65,6 +69,29 @@
       el = el.parentElement;
     }
     return null;
+  };
+
+  // 全页找最可能的会话滚动容器:可见、位于中间列、内容明显超出可视高度
+  // 用于 findScroller 失效时兜底(SPA 的滚动容器常是会话根节点的后代而非祖先)
+  const findPageScroller = () => {
+    const vw = window.innerWidth || 1;
+    const vh = window.innerHeight || 1;
+    const candidates = Array.from(document.querySelectorAll("body *"))
+      .filter((el) => el instanceof Element)
+      .filter((el) => !el.closest(`#${PANEL_ID}`))
+      .filter((el) => isVisible(el))
+      .filter((el) => {
+        if (!/(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY)) return false;
+        return el.scrollHeight > el.clientHeight + 50;
+      })
+      .filter((el) => {
+        const rect = el.getBoundingClientRect();
+        if (rect.height < vh * 0.3) return false;
+        const cx = rect.left + rect.width / 2;
+        return cx >= vw * 0.2 && cx <= vw * 0.8;
+      });
+    candidates.sort((a, b) => b.scrollHeight - a.scrollHeight);
+    return candidates[0] ?? null;
   };
 
   // scrollTo 失败不抛异常,需自行验证;false 表示滚动静默无效
@@ -140,16 +167,26 @@
         el.dispatchEvent(new Event("change", { bubbles: true }));
         return true;
       }
+      // execCommand("insertText") 会触发原生 input 事件,框架(如 Kimi 编辑器)已收到;
+      // 只有走 textContent 兜底时才需要手动补发,否则合成事件会导致内容被插入两次
+      let usedFallback = false;
       try {
         document.execCommand("selectAll", false, null);
-        document.execCommand("insertText", false, t);
+        const inserted = document.execCommand("insertText", false, t);
+        if (!inserted) {
+          el.textContent = t;
+          usedFallback = true;
+        }
       } catch {
         el.textContent = t;
+        usedFallback = true;
       }
-      try {
-        el.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: t }));
-      } catch {
-        el.dispatchEvent(new Event("input", { bubbles: true }));
+      if (usedFallback) {
+        try {
+          el.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: t }));
+        } catch {
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+        }
       }
       return true;
     } catch {
@@ -226,6 +263,30 @@
         return candidates[0] ?? null;
       }
 
+      if (SITE === "kimi") {
+        const selectors = [
+          'textarea[placeholder*="发送消息"]',
+          'textarea[placeholder*="消息"]',
+          'textarea[placeholder*="Kimi"]',
+          'div[contenteditable="true"][placeholder*="发送消息"]',
+          'div[contenteditable="true"][placeholder*="消息"]',
+          'div[contenteditable="true"]',
+          "textarea",
+        ];
+        const els = selectors.flatMap((s) => Array.from(document.querySelectorAll(s)));
+        const candidates = els
+          .filter((el) => isVisible(el))
+          .filter((el) => !el.closest(`#${PANEL_ID}`))
+          .filter((el) => {
+            const rect = el.getBoundingClientRect();
+            if (rect.bottom <= window.innerHeight * 0.5) return false;
+            if (rect.width < 180) return false;
+            return true;
+          });
+        candidates.sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
+        return candidates[0] ?? null;
+      }
+
       const candidates = getAutoInputCandidates();
       if (candidates.length === 0) return null;
       candidates.sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
@@ -248,6 +309,9 @@
       if (SITE === "doubao") {
         return document.querySelector("[class^='chat-list-']") ?? document.querySelector("[class*='chat-list-']") ?? document.querySelector("main") ?? document.body;
       }
+      if (SITE === "kimi") {
+        return document.querySelector("[class*='chat-list-']") ?? document.querySelector("[class*='conversation-']") ?? document.querySelector("[class*='chat-content']:not(.chat-content-item)") ?? document.querySelector("main") ?? document.body;
+      }
       return document.querySelector("ms-chat-session ms-autoscroll-container") ?? document.querySelector("ms-chat-session") ?? document.querySelector("main") ?? document.body;
     };
 
@@ -260,6 +324,16 @@
           .filter((el) => !!el.querySelector(".container-enLQFx, [class*='container-enLQFx']"))
           .at(-1);
         return safeText(last?.textContent ?? "");
+      }
+      if (SITE === "kimi") {
+        const candidates = Array.from(root.querySelectorAll(".chat-content-item-assistant, .chat-content-item"))
+          .filter((el) => !el.closest(`#${PANEL_ID}`))
+          .filter((el) => isVisible(el))
+          .filter((el) => !isInPageChrome(el));
+        if (candidates.length > 0) return safeText(candidates.at(-1).textContent ?? "");
+        const children = Array.from(root.children).filter((el) => el instanceof Element && !el.closest(`#${PANEL_ID}`) && isVisible(el));
+        if (children.length > 0) return safeText(children.at(-1).textContent ?? "");
+        return safeText(root.textContent ?? "");
       }
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const lastHost = Array.from(root.querySelectorAll("[id]"))
@@ -372,6 +446,58 @@
         return scrollToBottomVerified(document.scrollingElement || document.documentElement, scrollBehavior);
       }
 
+      if (SITE === "kimi") {
+        const container = getConversationRoot();
+        // kimi 每轮对话是一个 .chat-content-item,提问/回答分别以 -user / -assistant 后缀区分
+        const turns = Array.from(container.querySelectorAll(".chat-content-item"))
+          .filter((el) => !el.closest(`#${PANEL_ID}`))
+          .filter((el) => isVisible(el))
+          .filter((el) => !isInPageChrome(el));
+        const isUserTurn = (el) => el.classList.contains("chat-content-item-user") || !!el.querySelector(".user-content");
+        if (turns.length > 0) {
+          // 目标提问:优先匹配问题文本的最后一条提问,否则就是最后一条提问
+          let targetUserIdx = -1;
+          if (qNorm) {
+            for (let i = turns.length - 1; i >= 0; i -= 1) {
+              if (!isUserTurn(turns[i])) continue;
+              const t = turns[i].innerText ?? turns[i].textContent ?? "";
+              if (matchesQuestion(t)) {
+                targetUserIdx = i;
+                break;
+              }
+            }
+          }
+          if (targetUserIdx < 0) {
+            for (let i = turns.length - 1; i >= 0; i -= 1) {
+              if (isUserTurn(turns[i])) {
+                targetUserIdx = i;
+                break;
+              }
+            }
+          }
+          if (targetUserIdx >= 0) {
+            // 优先定位该提问之后的回答首行;没有回答则定位提问本身
+            let target = turns[targetUserIdx];
+            for (let j = targetUserIdx + 1; j < turns.length; j += 1) {
+              if (!isUserTurn(turns[j])) {
+                target = turns[j];
+                break;
+              }
+            }
+            try {
+              target.scrollIntoView({ block: "start", behavior: scrollBehavior });
+              return true;
+            } catch {
+              // ignore
+            }
+          }
+        }
+        // findScroller 只向上找祖先;kimi 的滚动容器常是 main 的后代,需全页查找兜底
+        const scroller = findScroller(container) ?? findPageScroller();
+        if (scroller && scrollToBottomVerified(scroller, scrollBehavior)) return true;
+        return scrollToBottomVerified(document.scrollingElement || document.documentElement, scrollBehavior);
+      }
+
       const container = getConversationRoot();
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const hosts = Array.from(container.querySelectorAll("[id]"))
@@ -460,7 +586,7 @@
     header.style.padding = "9px 10px";
 
     const title = document.createElement("div");
-    title.textContent = SITE === "doubao" ? "豆包" : "AI Studio";
+    title.textContent = SITE === "doubao" ? "豆包" : SITE === "kimi" ? "Kimi" : "AI Studio";
     title.style.fontWeight = "600";
     title.style.opacity = "0.92";
 
