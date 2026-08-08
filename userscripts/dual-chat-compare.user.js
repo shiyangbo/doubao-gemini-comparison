@@ -138,13 +138,27 @@
     GM_setValue(KEY.uiCollapsed, !!collapsed);
   };
 
-  const getAutoInputCandidates = () => {
-    const selectors = ["textarea", 'div[contenteditable="true"]', '[role="textbox"]', "input[type='text']"];
-    const candidates = selectors.flatMap((s) => Array.from(document.querySelectorAll(s)));
-    return candidates
+  const collectVisibleCandidates = (selectors, extraFilter = () => true) => {
+    const els = Array.from(new Set(selectors.flatMap((s) => Array.from(document.querySelectorAll(s)))));
+    return els
       .filter((el) => isVisible(el))
       .filter((el) => !el.closest(`#${PANEL_ID}`))
-      .filter((el) => el.getBoundingClientRect().bottom > window.innerHeight * 0.5);
+      .filter((el) => extraFilter(el));
+  };
+
+  const pickBestCandidate = (candidates, scorer = null) => {
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => {
+      const scoreDiff = scorer ? scorer(b) - scorer(a) : 0;
+      if (scoreDiff) return scoreDiff;
+      return b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom;
+    });
+    return candidates[0] ?? null;
+  };
+
+  const getAutoInputCandidates = () => {
+    const selectors = ["textarea", 'div[contenteditable="true"]', '[role="textbox"]', "input[type='text']"];
+    return collectVisibleCandidates(selectors, (el) => el.getBoundingClientRect().bottom > window.innerHeight * 0.5);
   };
 
   const setInputText = (el, text) => {
@@ -266,13 +280,8 @@
           'div[contenteditable="true"][role="textbox"]',
           'div[contenteditable="true"]',
         ];
-        const els = selectors.flatMap((s) => Array.from(document.querySelectorAll(s)));
-        const candidates = els
-          .filter((el) => isVisible(el))
-          .filter((el) => !el.closest(`#${PANEL_ID}`))
-          .filter((el) => el.getBoundingClientRect().bottom > window.innerHeight * 0.5);
-        candidates.sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
-        return candidates[0] ?? null;
+        const candidates = collectVisibleCandidates(selectors, (el) => el.getBoundingClientRect().bottom > window.innerHeight * 0.5);
+        return pickBestCandidate(candidates);
       }
 
       if (SITE === "aistudio") {
@@ -285,18 +294,11 @@
           "textarea",
           'div[contenteditable="true"]',
         ];
-        const els = selectors.flatMap((s) => Array.from(document.querySelectorAll(s)));
-        const candidates = els
-          .filter((el) => isVisible(el))
-          .filter((el) => !el.closest(`#${PANEL_ID}`))
-          .filter((el) => {
-            const rect = el.getBoundingClientRect();
-            if (rect.bottom <= window.innerHeight * 0.5) return false;
-            if (rect.width < 180) return false;
-            return true;
-          });
-        candidates.sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
-        return candidates[0] ?? null;
+        const candidates = collectVisibleCandidates(selectors, (el) => {
+          const rect = el.getBoundingClientRect();
+          return rect.bottom > window.innerHeight * 0.5 && rect.width >= 180;
+        });
+        return pickBestCandidate(candidates);
       }
 
       if (SITE === "kimi") {
@@ -311,7 +313,6 @@
           "textarea",
           'div[contenteditable="true"]',
         ];
-        const els = Array.from(new Set(selectors.flatMap((s) => Array.from(document.querySelectorAll(s)))));
         const score = (el) => {
           const rect = el.getBoundingClientRect();
           const hint = `${el.getAttribute("placeholder") ?? ""} ${el.getAttribute("aria-label") ?? ""}`;
@@ -324,15 +325,11 @@
           if (rect.bottom > window.innerHeight * 0.7) v += 20;
           return v;
         };
-        const candidates = els
-          .filter((el) => isVisible(el))
-          .filter((el) => !el.closest(`#${PANEL_ID}`))
-          .filter((el) => {
-            const rect = el.getBoundingClientRect();
-            return rect.width >= 180 && rect.height >= 16;
-          });
-        candidates.sort((a, b) => score(b) - score(a) || b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
-        return candidates[0] ?? null;
+        const candidates = collectVisibleCandidates(selectors, (el) => {
+          const rect = el.getBoundingClientRect();
+          return rect.width >= 180 && rect.height >= 16;
+        });
+        return pickBestCandidate(candidates, score);
       }
 
       const candidates = getAutoInputCandidates();
