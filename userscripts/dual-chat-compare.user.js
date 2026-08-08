@@ -152,7 +152,18 @@
     if (!t) return false;
     if (!el) return false;
     try {
-      el.focus();
+      try {
+        el.focus({ preventScroll: true });
+      } catch {
+        el.focus();
+      }
+      if (!(el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement)) {
+        try {
+          el.click();
+        } catch {
+          // ignore
+        }
+      }
       if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
         const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
         const desc = Object.getOwnPropertyDescriptor(proto, "value");
@@ -171,9 +182,22 @@
       // 只有走 textContent 兜底时才需要手动补发,否则合成事件会导致内容被插入两次
       let usedFallback = false;
       try {
+        const sel = window.getSelection();
+        if (!el.firstChild) el.appendChild(document.createTextNode(""));
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        if (sel) {
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+
         document.execCommand("selectAll", false, null);
+        document.execCommand("delete", false, null);
         const inserted = document.execCommand("insertText", false, t);
-        if (!inserted) {
+        const actual = safeText(el.textContent ?? "");
+        const insertedByDom = actual === t || actual.includes(t);
+        if ((!inserted && !insertedByDom) || !actual) {
           el.textContent = t;
           usedFallback = true;
         }
@@ -183,9 +207,21 @@
       }
       if (usedFallback) {
         try {
-          el.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: t }));
+          if (SITE === "kimi") {
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+          } else {
+            el.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: t }));
+          }
         } catch {
           el.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+        // 对于部分强依赖 React 的组件，可以多发一个 keyup 触发状态同步
+        if (SITE !== "kimi") {
+          try {
+            el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Enter" }));
+          } catch {
+            // ignore
+          }
         }
       }
       return true;
@@ -265,25 +301,37 @@
 
       if (SITE === "kimi") {
         const selectors = [
-          'textarea[placeholder*="发送消息"]',
-          'textarea[placeholder*="消息"]',
-          'textarea[placeholder*="Kimi"]',
+          'div[contenteditable="true"][role="textbox"]',
+          'div[contenteditable="true"][aria-multiline="true"]',
+          'div[contenteditable="true"][data-lexical-editor="true"]',
           'div[contenteditable="true"][placeholder*="发送消息"]',
           'div[contenteditable="true"][placeholder*="消息"]',
-          'div[contenteditable="true"]',
+          'textarea[placeholder*="发送消息"]',
+          'textarea[placeholder*="消息"]',
           "textarea",
+          'div[contenteditable="true"]',
         ];
-        const els = selectors.flatMap((s) => Array.from(document.querySelectorAll(s)));
+        const els = Array.from(new Set(selectors.flatMap((s) => Array.from(document.querySelectorAll(s)))));
+        const score = (el) => {
+          const rect = el.getBoundingClientRect();
+          const hint = `${el.getAttribute("placeholder") ?? ""} ${el.getAttribute("aria-label") ?? ""}`;
+          let v = 0;
+          if (el.getAttribute("role") === "textbox") v += 80;
+          if (el.getAttribute("aria-multiline") === "true") v += 40;
+          if (el.matches('[data-lexical-editor="true"]')) v += 40;
+          if (/发送消息|消息|kimi/i.test(hint)) v += 60;
+          if (isCenterColumn(el)) v += 20;
+          if (rect.bottom > window.innerHeight * 0.7) v += 20;
+          return v;
+        };
         const candidates = els
           .filter((el) => isVisible(el))
           .filter((el) => !el.closest(`#${PANEL_ID}`))
           .filter((el) => {
             const rect = el.getBoundingClientRect();
-            if (rect.bottom <= window.innerHeight * 0.5) return false;
-            if (rect.width < 180) return false;
-            return true;
+            return rect.width >= 180 && rect.height >= 16;
           });
-        candidates.sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
+        candidates.sort((a, b) => score(b) - score(a) || b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
         return candidates[0] ?? null;
       }
 
