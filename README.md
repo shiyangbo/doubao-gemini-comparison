@@ -1,6 +1,6 @@
 # Dual Chat Compare（Tampermonkey MVP）
 
-目标：在你已经登录的前提下，只输入一次问题，把问题同步填入豆包、Google AI Studio 与 Kimi 的输入框；支持一键开始回答；并支持一键滚动到最新。
+目标：在你已经登录的前提下，只输入一次问题，把问题同步填入豆包、Google AI Studio、Kimi 与 ChatGPT 的输入框；支持一键开始回答；并支持一键滚动到最新。
 
 ## 安装
 
@@ -11,6 +11,7 @@
    - 豆包：`https://www.doubao.com/`
    - AI Studio：`https://aistudio.google.com/`
    - Kimi：`https://www.kimi.com/` 或 `https://kimi.moonshot.cn/`
+   - ChatGPT：`https://chatgpt.com/`（含项目页）
 
 ## 使用（精简 MVP）
 
@@ -30,11 +31,12 @@
 
 ## 站点适配与维护
 
-当前维护重点是三类能力：输入框识别、文本写入、最新回答定位。
+当前维护重点是四类能力：输入框识别、文本写入、发送触发、最新回答定位。
 
-- 豆包：优先匹配靠近底部的 `textarea` 或 `Slate` 风格编辑器。
+- 豆包：优先匹配靠近底部的 `textarea` 或 `Slate` 风格编辑器；开始回答时走“填充→等待重渲染→发送→验证”的异步流程：填充后先等 React 把语音键换成发送键再点击（完整 pointer/mouse 事件序列，而不是只发 `click`），并显式排除输入框左侧的「+」附件键、「快速」模型切换键等同样无文字/aria 的干扰按钮；每一步发送后都验证是否真正发出（跳转新会话/会话节点增加/输入框被清空），未发出则依次换 Enter、重新填充再点按钮重试。
 - AI Studio：优先匹配带 `prompt` 语义的输入框，再按页面底部位置兜底。
-- Kimi：优先匹配 `role="textbox"`、`aria-multiline="true"`、`data-lexical-editor="true"` 等更像真实聊天输入框的节点，避免误选其他可编辑区域。
+- Kimi：优先匹配 `role="textbox"`、`aria-multiline="true"`、`data-lexical-editor="true"` 等更像真实聊天输入框的节点，避免误选其他可编辑区域。另外 Kimi 会把填入的文本保存为“新会话草稿”，导致下次首次打开时历史问题被自动恢复到输入框；脚本在页面加载后会检查编辑器内容，若与最近一次问题完全一致则自动清除。
+- ChatGPT：输入框固定为 `#prompt-textarea`（ProseMirror 编辑器），不按页面底部位置过滤（项目页的输入框可能在页面中部）；开始回答时优先点击真实的发送按钮（`data-testid="send-button"`），找不到再退回 Enter；最新定位直接锚定最后一条 `[data-message-author-role="assistant"]` 消息节点（即最新回答首行），不依赖轮次结构与提问匹配，避免站点结构差异时静默退化为滚到底部。
 - 普通 `textarea/input`：通过原型链 `value setter` 写入，再派发 `input/change` 事件。
 - `contenteditable`：优先走原生 `execCommand("insertText")`，并以目标节点中的实际文本作为成功判断依据，不能只依赖返回值。
 - Kimi 特例：其富文本编辑器对 `execCommand` 返回值不稳定，且对额外补发事件较敏感；如果文本已进入 DOM，就不要再走 fallback 重写，否则可能出现重复输入。
