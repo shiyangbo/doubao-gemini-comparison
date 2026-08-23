@@ -1,14 +1,15 @@
 // ==UserScript==
-// @name         Dual Chat Compare (Doubao / AI Studio / Kimi)
+// @name         Dual Chat Compare (Doubao / AI Studio / Kimi / ChatGPT)
 // @namespace    local.dual-chat-compare
-// @version      0.4.9
-// @description  豆包 + Google AI Studio + Kimi：一次输入，上屏/开始回答/滚到最新（MVP）
+// @version      0.5.1
+// @description  豆包 + Google AI Studio + Kimi + ChatGPT：一次输入，上屏/开始回答/滚到最新（MVP）
 // @match        *://www.doubao.com/*
 // @match        *://doubao.com/*
 // @match        *://aistudio.google.com/*
 // @match        *://www.kimi.com/*
 // @match        *://kimi.com/*
 // @match        *://kimi.moonshot.cn/*
+// @match        *://chatgpt.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addValueChangeListener
@@ -30,6 +31,7 @@
     if (host.includes("doubao.com")) return "doubao";
     if (host.includes("aistudio.google.com")) return "aistudio";
     if (host.includes("kimi.com") || host.includes("kimi.moonshot.cn")) return "kimi";
+    if (host.includes("chatgpt.com")) return "chatgpt";
     return null;
   })();
 
@@ -230,7 +232,8 @@
           el.dispatchEvent(new Event("input", { bubbles: true }));
         }
         // 对于部分强依赖 React 的组件，可以多发一个 keyup 触发状态同步
-        if (SITE !== "kimi") {
+        // chatgpt 与 kimi 一样跳过:多发的 Enter 可能误触发发送
+        if (SITE !== "kimi" && SITE !== "chatgpt") {
           try {
             el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Enter" }));
           } catch {
@@ -332,6 +335,21 @@
         return pickBestCandidate(candidates, score);
       }
 
+      if (SITE === "chatgpt") {
+        // ChatGPT 输入框是 id 固定的 ProseMirror 编辑器;项目页的输入框可能位于页面中部,不按底部位置过滤
+        const selectors = [
+          "#prompt-textarea",
+          'div[contenteditable="true"][role="textbox"]',
+          'div[contenteditable="true"]',
+          "textarea",
+        ];
+        const candidates = collectVisibleCandidates(selectors, (el) => {
+          const rect = el.getBoundingClientRect();
+          return rect.width >= 180 && rect.height >= 16;
+        });
+        return pickBestCandidate(candidates);
+      }
+
       const candidates = getAutoInputCandidates();
       if (candidates.length === 0) return null;
       candidates.sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
@@ -345,6 +363,21 @@
     };
 
     const send = () => {
+      if (SITE === "chatgpt") {
+        // ChatGPT 对合成的 Enter 按键不稳定,优先点真实的发送按钮;按钮未启用(填充未生效)时退回 Enter
+        const btn = pickBestCandidate(
+          collectVisibleCandidates([
+            'button[data-testid="send-button"]',
+            "#composer-submit-button",
+            'button[aria-label*="发送"]',
+            'button[aria-label*="Send" i]',
+          ])
+        );
+        if (btn && !btn.disabled && btn.getAttribute("aria-disabled") !== "true") {
+          btn.click();
+          return true;
+        }
+      }
       const input = findInput();
       if (!input) return false;
       return pressKeyCombo(input, { key: "Enter", code: "Enter" });
@@ -356,6 +389,9 @@
       }
       if (SITE === "kimi") {
         return document.querySelector("[class*='chat-list-']") ?? document.querySelector("[class*='conversation-']") ?? document.querySelector("[class*='chat-content']:not(.chat-content-item)") ?? document.querySelector("main") ?? document.body;
+      }
+      if (SITE === "chatgpt") {
+        return document.querySelector("main") ?? document.body;
       }
       return document.querySelector("ms-chat-session ms-autoscroll-container") ?? document.querySelector("ms-chat-session") ?? document.querySelector("main") ?? document.body;
     };
@@ -378,6 +414,16 @@
         if (candidates.length > 0) return safeText(candidates.at(-1).textContent ?? "");
         const children = Array.from(root.children).filter((el) => el instanceof Element && !el.closest(`#${PANEL_ID}`) && isVisible(el));
         if (children.length > 0) return safeText(children.at(-1).textContent ?? "");
+        return safeText(root.textContent ?? "");
+      }
+      if (SITE === "chatgpt") {
+        // 最新回答 = 最后一个 assistant 消息节点;轮次节点结构兜底
+        const answers = Array.from(root.querySelectorAll('[data-message-author-role="assistant"]'))
+          .filter((el) => !el.closest(`#${PANEL_ID}`));
+        if (answers.length > 0) return safeText(answers.at(-1).textContent ?? "");
+        const turns = Array.from(root.querySelectorAll('[data-testid^="conversation-turn"]'))
+          .filter((el) => !el.closest(`#${PANEL_ID}`));
+        if (turns.length > 0) return safeText(turns.at(-1).textContent ?? "");
         return safeText(root.textContent ?? "");
       }
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -543,6 +589,32 @@
         return scrollToBottomVerified(document.scrollingElement || document.documentElement, scrollBehavior);
       }
 
+      if (SITE === "chatgpt") {
+        const container = getConversationRoot();
+        // 目标 = 最后一条 assistant 消息;不依赖轮次标签与提问匹配,避免站点结构差异时静默退化为滚到底部
+        const answers = Array.from(container.querySelectorAll('[data-message-author-role="assistant"]'))
+          .filter((el) => !el.closest(`#${PANEL_ID}`))
+          .filter((el) => !isInPageChrome(el));
+        const target =
+          answers.at(-1) ??
+          Array.from(container.querySelectorAll('[data-testid^="conversation-turn"]'))
+            .filter((el) => !el.closest(`#${PANEL_ID}`))
+            .filter((el) => !isInPageChrome(el))
+            .at(-1);
+        if (target) {
+          try {
+            target.style.scrollMarginTop = "70px"; // 避开吸顶头部遮挡回答首行
+            target.scrollIntoView({ block: "start", behavior: scrollBehavior });
+            return true;
+          } catch {
+            // ignore
+          }
+        }
+        const scroller = findScroller(container) ?? findPageScroller();
+        if (scroller && scrollToBottomVerified(scroller, scrollBehavior)) return true;
+        return scrollToBottomVerified(document.scrollingElement || document.documentElement, scrollBehavior);
+      }
+
       const container = getConversationRoot();
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const hosts = Array.from(container.querySelectorAll("[id]"))
@@ -631,7 +703,7 @@
     header.style.padding = "9px 10px";
 
     const title = document.createElement("div");
-    title.textContent = SITE === "doubao" ? "豆包" : SITE === "kimi" ? "Kimi" : "AI Studio";
+    title.textContent = SITE === "doubao" ? "豆包" : SITE === "kimi" ? "Kimi" : SITE === "chatgpt" ? "ChatGPT" : "AI Studio";
     title.style.fontWeight = "600";
     title.style.opacity = "0.92";
 
