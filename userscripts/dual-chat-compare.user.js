@@ -856,13 +856,13 @@
   const scrollToLatestOnThisPage = () => {
     const run = () => Adapter.scrollToLatest();
     const ok = run();
-    [120, 360, 800, 1500].forEach((delay) => {
-      window.setTimeout(run, delay);
-    });
+    pendingLatestScrollTimers.forEach((timer) => window.clearTimeout(timer));
+    pendingLatestScrollTimers = [120, 360, 800, 1500].map((delay) => window.setTimeout(run, delay));
     return ok;
   };
 
   let pendingLatestStop = null;
+  let pendingLatestScrollTimers = [];
   let pendingLatestWhenVisible = false;
   const clearLatestReplayWindow = () => {
     pendingLatestWhenVisible = false;
@@ -875,6 +875,8 @@
   const cancelPendingLatest = (clearStatus = true) => {
     if (pendingLatestStop) pendingLatestStop();
     pendingLatestStop = null;
+    pendingLatestScrollTimers.forEach((timer) => window.clearTimeout(timer));
+    pendingLatestScrollTimers = [];
     if (clearStatus) setLatestStatus("");
   };
 
@@ -997,6 +999,7 @@
   });
   window.addEventListener("focus", replayLatestIfNeeded, true);
   window.addEventListener("pageshow", replayLatestIfNeeded);
+  window.addEventListener("wheel", () => cancelPendingLatest(), { passive: true });
 
   GM_addValueChangeListener(KEY.question, (_name, _oldVal, newVal) => {
     const qText = safeText(newVal?.text ?? "");
