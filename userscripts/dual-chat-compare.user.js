@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dual Chat Compare (Doubao / AI Studio / Kimi / ChatGPT)
 // @namespace    local.dual-chat-compare
-// @version      0.5.1
+// @version      0.5.14
 // @description  豆包 + Google AI Studio + Kimi + ChatGPT：一次输入，上屏/开始回答/滚到最新（MVP）
 // @match        *://www.doubao.com/*
 // @match        *://doubao.com/*
@@ -391,9 +391,79 @@
         return document.querySelector("[class*='chat-list-']") ?? document.querySelector("[class*='conversation-']") ?? document.querySelector("[class*='chat-content']:not(.chat-content-item)") ?? document.querySelector("main") ?? document.body;
       }
       if (SITE === "chatgpt") {
-        return document.querySelector("main") ?? document.body;
+        // SPA 会保留尺寸为零的旧会话 main,每次都选当前有布局的容器。
+        return Array.from(document.querySelectorAll('main, [role="main"]')).find(isVisible) ?? document.body;
       }
       return document.querySelector("ms-chat-session ms-autoscroll-container") ?? document.querySelector("ms-chat-session") ?? document.querySelector("main") ?? document.body;
+    };
+
+    const getChatGptLatestTurn = (root) => {
+      const turns = root.querySelectorAll("[data-turn-key]");
+      return turns.item(turns.length - 1) ?? root;
+    };
+
+    const getChatGptAnswerTarget = (root) => {
+      const turn = getChatGptLatestTurn(root);
+      const last = (selector) =>
+        Array.from(turn.querySelectorAll(selector))
+          .filter((el) => !el.closest(`#${PANEL_ID}`) && !isInPageChrome(el))
+          .at(-1) ?? null;
+      const bubble = last("[data-user-message-bubble]");
+      const afterQuestion = (el) => !bubble || !!(bubble.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const assistant = last('[data-message-author-role="assistant"]');
+      if (assistant && afterQuestion(assistant) && isVisible(assistant)) return assistant;
+
+      // display:contents 自身没有布局盒,实际位置来自其首个可见内容子块。
+      const renderedBlock = (el) => {
+        if (el.matches("button, nav, header, footer, aside, [role='button']") || !safeText(el.textContent)) return null;
+        if (isVisible(el)) return el;
+        if (getComputedStyle(el).display === "contents") {
+          for (const child of el.children) {
+            const block = renderedBlock(child);
+            if (block) return block;
+          }
+        }
+        return null;
+      };
+      const marker = last("[data-chatgpt-agent-turn-start]");
+      // 独立回答块可能没有提问气泡;隐藏起点仍可作为结构锚点,其坐标不参与定位。
+      for (const start of [bubble, marker]) {
+        if (!start || (start === marker && !afterQuestion(start))) continue;
+        for (let anchor = start; anchor && anchor !== turn; anchor = anchor.parentElement) {
+          for (let sibling = anchor.nextElementSibling; sibling; sibling = sibling.nextElementSibling) {
+            const block = renderedBlock(sibling);
+            if (block) return block;
+          }
+        }
+      }
+      // 标记自身有布局盒时才可直接作为滚动目标。
+      if (marker && afterQuestion(marker) && isVisible(marker)) return marker;
+      return null;
+    };
+
+    const scrollChatGptToLatest = () => {
+      const root = getConversationRoot();
+      const target = getChatGptAnswerTarget(root);
+      if (!target) {
+        console.warn("[Dual Chat Compare] 未找到回答节点", { root, turn: getChatGptLatestTurn(root) });
+        return false;
+      }
+      const viewport = document.scrollingElement || document.documentElement;
+      const scroller = findScroller(target.parentElement) ?? (viewport.scrollHeight > viewport.clientHeight ? viewport : null);
+      if (!scroller) {
+        console.warn("[Dual Chat Compare] 未找到回答的滚动容器", { target });
+        return false;
+      }
+      const top = scroller === viewport ? 0 : scroller.getBoundingClientRect().top + scroller.clientTop;
+      const desired = Math.max(0, Math.min(
+        scroller.scrollHeight - scroller.clientHeight,
+        scroller.scrollTop + target.getBoundingClientRect().top - top - 70
+      ));
+      // 直接定位,避免平滑滚动被站点中断;instant 同时覆盖页面的 scroll-behavior:smooth。
+      scroller.scrollTo({ top: desired, behavior: "instant" });
+      const positioned = Math.abs(scroller.scrollTop - desired) <= 2;
+      if (!positioned) console.warn("[Dual Chat Compare] 滚动未到位", { target, scroller, desired, actual: scroller.scrollTop });
+      return positioned;
     };
 
     const getLatestAnswerFingerprint = () => {
@@ -417,14 +487,10 @@
         return safeText(root.textContent ?? "");
       }
       if (SITE === "chatgpt") {
-        // 最新回答 = 最后一个 assistant 消息节点;轮次节点结构兜底
-        const answers = Array.from(root.querySelectorAll('[data-message-author-role="assistant"]'))
-          .filter((el) => !el.closest(`#${PANEL_ID}`));
-        if (answers.length > 0) return safeText(answers.at(-1).textContent ?? "");
-        const turns = Array.from(root.querySelectorAll('[data-testid^="conversation-turn"]'))
-          .filter((el) => !el.closest(`#${PANEL_ID}`));
-        if (turns.length > 0) return safeText(turns.at(-1).textContent ?? "");
-        return safeText(root.textContent ?? "");
+        const turn = getChatGptLatestTurn(root);
+        const answers = turn.querySelectorAll('[data-message-author-role="assistant"]');
+        const latest = answers.item(answers.length - 1) ?? (turn !== root ? turn : null);
+        return safeText(latest?.textContent ?? "");
       }
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const lastHost = Array.from(root.querySelectorAll("[id]"))
@@ -589,31 +655,7 @@
         return scrollToBottomVerified(document.scrollingElement || document.documentElement, scrollBehavior);
       }
 
-      if (SITE === "chatgpt") {
-        const container = getConversationRoot();
-        // 目标 = 最后一条 assistant 消息;不依赖轮次标签与提问匹配,避免站点结构差异时静默退化为滚到底部
-        const answers = Array.from(container.querySelectorAll('[data-message-author-role="assistant"]'))
-          .filter((el) => !el.closest(`#${PANEL_ID}`))
-          .filter((el) => !isInPageChrome(el));
-        const target =
-          answers.at(-1) ??
-          Array.from(container.querySelectorAll('[data-testid^="conversation-turn"]'))
-            .filter((el) => !el.closest(`#${PANEL_ID}`))
-            .filter((el) => !isInPageChrome(el))
-            .at(-1);
-        if (target) {
-          try {
-            target.style.scrollMarginTop = "70px"; // 避开吸顶头部遮挡回答首行
-            target.scrollIntoView({ block: "start", behavior: scrollBehavior });
-            return true;
-          } catch {
-            // ignore
-          }
-        }
-        const scroller = findScroller(container) ?? findPageScroller();
-        if (scroller && scrollToBottomVerified(scroller, scrollBehavior)) return true;
-        return scrollToBottomVerified(document.scrollingElement || document.documentElement, scrollBehavior);
-      }
+      if (SITE === "chatgpt") return scrollChatGptToLatest();
 
       const container = getConversationRoot();
       const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -857,7 +899,8 @@
     const run = () => Adapter.scrollToLatest();
     const ok = run();
     pendingLatestScrollTimers.forEach((timer) => window.clearTimeout(timer));
-    pendingLatestScrollTimers = [120, 360, 800, 1500].map((delay) => window.setTimeout(run, delay));
+    const delays = SITE === "chatgpt" ? [180] : [120, 360, 800, 1500];
+    pendingLatestScrollTimers = delays.map((delay) => window.setTimeout(run, delay));
     return ok;
   };
 
@@ -908,11 +951,11 @@
       sawChange = true;
     };
     const timer = window.setInterval(() => {
-      touch();
+      scheduleTouch();
       if (sawChange && now() - lastChangeAt > 1800) {
         cancelPendingLatest(false);
-        scrollToLatestOnThisPage();
-        setLatestStatus("已自动定位到最新", 1800);
+        const positioned = scrollToLatestOnThisPage();
+        setLatestStatus(positioned ? "已自动定位到最新" : "暂未找到可定位内容", 1800);
         return;
       }
       if ((!sawChange && now() - startedAt > idleTimeout) || now() - startedAt > 90000) {
@@ -920,15 +963,13 @@
         setLatestStatus(ok ? "已定位到最新" : "暂未找到可定位内容", 1800);
       }
     }, 500);
-    // rAF 合并高频突变:流式输出时每帧最多算一次指纹
-    let rafPending = false;
+    // 突变只驱动节流检查:指纹统一并入 500ms 节奏,避免流式期间逐帧读取文本
+    let lastTouchAt = 0;
     const scheduleTouch = () => {
-      if (rafPending) return;
-      rafPending = true;
-      requestAnimationFrame(() => {
-        rafPending = false;
-        touch();
-      });
+      const t = now();
+      if (t - lastTouchAt < 500) return;
+      lastTouchAt = t;
+      touch();
     };
     const observer = new MutationObserver(scheduleTouch);
     observer.observe(root, { childList: true, subtree: true, characterData: true });
@@ -1000,6 +1041,14 @@
   window.addEventListener("focus", replayLatestIfNeeded, true);
   window.addEventListener("pageshow", replayLatestIfNeeded);
   window.addEventListener("wheel", () => cancelPendingLatest(), { passive: true });
+  window.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (e.target instanceof Element && e.target.closest(`#${PANEL_ID}`)) return;
+      cancelPendingLatest();
+    },
+    true
+  );
 
   GM_addValueChangeListener(KEY.question, (_name, _oldVal, newVal) => {
     const qText = safeText(newVal?.text ?? "");
